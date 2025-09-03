@@ -1,0 +1,249 @@
+# AI狼人杀游戏配置文件
+# 版本: 1.0.0
+# 注意: 将此文件复制为 config.yaml 并填入实际的API密钥
+
+version: "1.0.0"
+
+# AI服务提供商配置
+# 支持: openai, anthropic, google
+ai_providers:
+  - name: "GPT-4"
+    provider: "openai"
+    api_key: "your-openai-api-key-here"  # 替换为实际的OpenAI API密钥
+    model: "gpt-4"
+    temperature: 0.7
+    max_tokens: 1000
+    enabled: true
+    
+  - name: "Claude-3"
+    provider: "anthropic"
+    api_key: "your-claude-api-key-here"  # 替换为实际的Anthropic API密钥
+    model: "claude-3-sonnet-20240229"
+    temperature: 0.7
+    max_tokens: 1000
+    enabled: true
+    
+  - name: "Gemini-Pro"
+    provider: "google"
+    api_key: "your-google-api-key-here"  # 替换为实际的Google AI API密钥
+    model: "gemini-pro"
+    temperature: 0.7
+    max_tokens: 1000
+    enabled: true
+
+# 游戏通用设置
+game_settings:
+  # 界面显示设置
+  display:
+    theme: "dark"          # light/dark/system
+    language: "zh-CN"      # 界面语言
+    font_size: 12
+    chat_style: "bubble"   # bubble/list
+    layout: "circular"     # circular/grid/linear
+    
+  # 聊天显示设置
+  chat:
+    show_timestamps: true
+    show_avatars: true
+    avatar_size: 40
+    bubble_max_width: 300
+    animation_enabled: true
+    
+  # 身份牌显示
+  identity_cards:
+    visible: false         # 默认隐藏身份
+    reveal_on_death: true  # 死亡时揭示身份
+    style: "modern"        # classic/modern
+
+# 狼人杀游戏特定设置
+werewolf_game:
+  # 默认游戏设置
+  default_settings:
+    player_count: 8
+    roles:
+      werewolf: 2
+      villager: 4
+      prophet: 1
+      witch: 1
+      hunter: 0
+      idiot: 0
+    
+  # 游戏流程设置
+  game_flow:
+    day_time_limit: 120    # 白天讨论时间(秒)
+    night_time_limit: 60   # 夜晚行动时间(秒)
+    voting_time_limit: 30  # 投票时间(秒)
+    auto_proceed: false    # 自动进入下一阶段
+    
+  # AI行为设置
+  ai_behavior:
+    conversation_style: "strategic"  # strategic/random/roleplay
+    min_response_length: 20
+    max_response_length: 200
+    include_emotions: true
+    use_strategy: true
+
+# 日志和记录设置
+logging:
+  level: "INFO"            # DEBUG/INFO/WARNING/ERROR
+  file_enabled: true
+  file_path: "logs/game.log"
+  max_file_size: 10485760  # 10MB
+  backup_count: 5
+  
+  # 数据记录设置
+  data_recording:
+    enabled: true
+    record_chat: true
+    record_actions: true
+    record_decisions: true
+    output_format: "json"  # json/csv
+
+# 高级设置
+advanced:
+  # API调用设置
+  api:
+    timeout: 30            # API调用超时时间(秒)
+    retry_attempts: 3
+    retry_delay: 2
+    
+  # 性能设置
+  performance:
+    cache_enabled: true
+    cache_size: 1000
+    preload_models: false
+    
+  # 网络设置
+  network:
+    proxy_enabled: false
+    proxy_url: ""
+    verify_ssl: true
+
+# 用户界面快捷键
+shortcuts:
+  new_game: "Ctrl+N"
+  open_config: "Ctrl+O"
+  save_game: "Ctrl+S"
+  next_phase: "Space"
+  toggle_chat: "Ctrl+T"
+  show_roles: "Ctrl+R"
+
+# 环境变量覆盖（可选）
+# 以下设置可以通过环境变量覆盖
+environment_overrides:
+  - openai_api_key: "OPENAI_API_KEY"
+  - anthropic_api_key: "ANTHROPIC_API_KEY" 
+  - google_api_key: "GOOGLE_API_KEY"
+  - log_level: "LOG_LEVEL"
+
+# 提示词模板
+prompt_templates:
+  # 角色提示词
+  role_prompt: |
+    你正在玩狼人杀游戏，你的身份是{role}。
+    
+    游戏背景：
+    {game_situation}
+    
+    你的目标：
+    {win_condition}
+    
+    当前阶段：{phase}
+    你的行动：{action}
+    
+    请根据你的角色和当前情况做出决策。
+  
+  # 发言提示词
+  speech_prompt: |
+    请以{role}的身份发言，风格：{style}
+    当前局势：{situation}
+    你的推理：{reasoning}
+    发言要求：{requirements}
+  
+  # 投票提示词
+  voting_prompt: |
+    请根据以下信息决定投票给谁：
+    - 当前存活玩家：{alive_players}
+    - 发言记录：{speech_records}
+    - 游戏事件：{game_events}
+    
+    请给出你的投票选择和理由。
+
+# 角色定义（可选覆盖）
+# 可以在这里自定义角色属性
+role_definitions:
+  werewolf:
+    name: "狼人"
+    team: "werewolf"
+    description: "夜晚可以杀死一名玩家"
+    night_action: true
+    priority: 10
+    
+  villager:
+    name: "村民" 
+    team: "villager"
+    description: "没有特殊能力，依靠投票找出狼人"
+    night_action: false
+    priority: 100
+    
+  prophet:
+    name: "预言家"
+    team: "villager"
+    description: "每晚可以查验一名玩家的真实身份"
+    night_action: true
+    priority: 20
+    
+  witch:
+    name: "女巫"
+    team: "villager"
+    description: "拥有一瓶解药和一瓶毒药，每晚只能使用一瓶"
+    night_action: true
+    priority: 30
+    
+  hunter:
+    name: "猎人"
+    team: "villager"
+    description: "被狼人杀死或投票处决时，可以开枪带走一名玩家"
+    night_action: false
+    priority: 40
+    
+  idiot:
+    name: "白痴"
+    team: "villager"
+    description: "被投票处决时不会死亡，但失去投票权"
+    night_action: false
+    priority: 50
+
+# 团队定义
+teams:
+  werewolf:
+    name: "狼人阵营"
+    color: "#dc2626"  # 红色
+    description: "隐藏在村民中的狼人，夜晚猎杀村民"
+    
+  villager:
+    name: "村民阵营"
+    color: "#16a34a"  # 绿色
+    description: "善良的村民，需要找出并投票处决狼人"
+
+# 游戏阶段定义
+phases:
+  - name: "夜晚"
+    description: "狼人和神职角色行动阶段"
+    duration: 60
+    actions:
+      - werewolf: "选择猎杀目标"
+      - prophet: "查验玩家身份"
+      - witch: "使用药水"
+      
+  - name: "白天"
+    description: "所有玩家讨论和投票阶段"
+    duration: 120
+    actions:
+      - all: "讨论和发言"
+      - all: "投票处决嫌疑人"
+
+# 注意：实际使用时，请确保：
+# 1. 替换所有"your-xxx-api-key-here"为实际的API密钥
+# 2. 根据需求调整游戏设置
+# 3. 配置文件路径：werewolf-game/config/config.yaml
