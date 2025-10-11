@@ -1,0 +1,12 @@
+{
+  "default_model": "gpt-4o-mini",
+  "player_models": {
+    "AI_0": "gpt-4o-mini",
+    "AI_1": "gpt-4o-mini",
+    "AI_2": "gpt-4o",
+    "AI_3": "gpt-3.5-turbo",
+    "AI_4": "gpt-4o-mini",
+    "AI_5": "gpt-4o-mini"
+  },
+  "openai_api_url": "https://api.openai.com/v1/chat/completions"
+}

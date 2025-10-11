@@ -1,0 +1,10 @@
+{
+  "openai": {
+    "api_key": "YOUR_OPENAI_KEY",
+    "model_url": "https://api.openai.com/v1/chat/completions"
+  },
+  "anthropic": {
+    "api_key": "YOUR_ANTHROPIC_KEY",
+    "model_url": "https://api.anthropic.com/v1/complete"
+  }
+}

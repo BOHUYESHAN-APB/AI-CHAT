@@ -1,33 +1,50 @@
-# 狼人杀（Werewolf）游戏 - 项目说明
+# 狼人杀（AI 评测）项目
 
 简介
-本目录用于开发一款基于浏览器/REST 的狼人杀游戏服务器与简单前端。
+本项目用于让 AI 扮演所有玩家进行狼人杀对局，支持多模型映射与评测采样。
 
-目标
-- 使用 Python + FastAPI 实现后端游戏状态机与 API
-- 提供简易前端用于玩家交互（可选：React / Svelte）
-- 包含单元测试与文档
+快速开始
+先安装后端依赖：
+python -m venv .venv
+# Windows:
+.venv\Scripts\activate
+# macOS / Linux:
+source .venv/bin/activate
+pip install -r requirements.txt
 
-项目结构（初始）
-games/werewolf/
-├─ README.md
-├─ backend/
-├─ ├─ app.py            # FastAPI 入口
-├─ ├─ game_engine.py    # 核心状态机与规则
-├─ ├─ models.py         # 数据模型
-├─ ├─ requirements.txt
-├─ frontend/            # 可选：前端代码
-└─ tests/               # 单元测试
+配置 API Key（三种可选方式）：
+- 环境变量：OPENAI_API_KEY
+- 根目录文件：在项目根放置名为 `api_key` 的纯文本文件，包含密钥
+- JSON 文件：在根目录放 `api_keys.json`，键名如 OPENAI_API_KEY
 
-快速开始（开发）
-1. 创建并激活虚拟环境：python -m venv .venv && .venv\\Scripts\\Activate.ps1
-2. 安装依赖：pip install -r games/werewolf/backend/requirements.txt
-3. 启动开发服务器：
-   cd games/werewolf/backend && uvicorn app:app --reload --host 127.0.0.1 --port 8000
+多模型配置
+示例配置文件：[`games/werewolf/backend/ai_models.example.json`](games/werewolf/backend/ai_models.example.json:1)
+若要自定义，复制为 [`games/werewolf/backend/ai_models.json`](games/werewolf/backend/ai_models.json:1) 并修改 `default_model` 与 `player_models`。
 
-下一步
-- 设计游戏规则与数据模型
-- 初始化 backend/app.py 与核心状态机实现
+运行后端
+python games/werewolf/backend/app.py
+后端默认监听 8080，提供 /rooms、/rooms/<id>/join、/start、/step 等 API，用于创建/加入/开始/推进回合。
 
-维护者
-- 初始化：自动化脚本
+前端（开发）
+进入前端目录并安装：
+cd games/werewolf/frontend
+npm install
+npm run dev
+前端使用 Vite，package.json 已设置 proxy 到 http://localhost:8080，可在浏览器打开提示的地址访问简易 UI。
+
+运行测试
+pytest
+
+重要文件说明
+- [`games/werewolf/backend/app.py`](games/werewolf/backend/app.py:1) — 后端主程序（房间管理、游戏状态机）
+- [`games/werewolf/backend/ai_client.py`](games/werewolf/backend/ai_client.py:1) — AI 调用、提示构建与策略后备
+- [`games/werewolf/backend/ai_models.example.json`](games/werewolf/backend/ai_models.example.json:1) — 多模型示例映射
+- [`games/werewolf/frontend/src/App.jsx`](games/werewolf/frontend/src/App.jsx:1) — 简易前端界面
+
+后续建议
+- 增加决策/响应日志（记录每次调用的模型、耗时与原始响应）以便评测分析
+- 增加更高级的 AI 策略与多轮对话模拟
+- 导出评测结果（CSV/JSON）便于统计与比较
+
+许可
+MIT

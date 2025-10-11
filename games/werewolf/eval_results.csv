@@ -1,0 +1,6 @@
+game_index,room_id,winner,days,model_calls,avg_latency_sec,timestamp
+0,86224e88,villagers,2,0,0,1760162127.9488127
+1,fe3d49c9,werewolves,3,0,0,1760162127.9518266
+2,441f6220,werewolves,3,0,0,1760162127.9538405
+3,2994ea16,villagers,2,0,0,1760162127.95584
+4,13b4d09c,villagers,2,0,0,1760162127.9598475
