@@ -1,0 +1,63 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+.eggs/
+*.egg-info/
+
+# Virtual environments (ignore common venv locations)
+venv/
+.venv/
+games/werewolf/backend/.venv/
+games/werewolf/frontend/.venv/
+
+# Node / frontend
+node_modules/
+games/werewolf/frontend/node_modules/
+games/werewolf/frontend/dist/
+games/werewolf/frontend/build/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment files
+.env
+.env.*
+.env.local
+.envrc
+
+# Editor files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# PySide artifacts
+*.qmlc
+
+# logs
+*.log
+logs/
+
+# pytest cache
+.pytest_cache/
+
+# Coverage / reports
+.coverage
+htmlcov/
+
+# Databases
+*.sqlite3
+*.db
+
+# API keys (do not commit real keys)
+api_keys.json
