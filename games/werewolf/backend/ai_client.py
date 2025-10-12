@@ -35,6 +35,7 @@ import os
 import random
 import requests
 import json
+import time
 from typing import Dict, Any, Optional, List
 
 # Load config once
@@ -185,68 +186,117 @@ def call_openai_chat_with_meta(prompt: str, api_key: str, model: Optional[str] =
         # return the exception string as raw for diagnostics
         return None, {"error": str(e)}, model_to_use
 
-def build_night_prompt(player: str, role: str, state: Dict[str, Any]) -> str:
-    alive = state.get("alive", [])
+def build_night_prompt(player: str, role: str, state: Dict[str, Any], game_id: Optional[str] = None, message_id: Optional[str] = None) -> str:
+    """
+    Build a JSON-first input payload string following LOGIC_SPEC for night phase.
+    The model is expected to reply with a JSON object (see LOGIC_SPEC).
+    """
+    ctx = state.get("model_state") if state.get("model_state") else state
+    alive = ctx.get("alive", [])
     alive = [p for p in alive if p != player]
-    roles_map = state.get("roles_known_to_server", {})
-    history = summarize_history(state, max_entries=6)
+    roles_map = ctx.get("roles_known_to_server", {})
+    history = summarize_history(ctx, max_entries=6)
+    input_obj = {
+        "game_id": game_id or "local_game",
+        "message_id": message_id or str(random.randint(1000, 9999)),
+        "phase": "night",
+        "day": ctx.get("day", state.get("day", 0)),
+        "current_player": player,
+        "your_role": role,
+        "your_team": "werewolves" if role == "werewolf" else "villagers",
+        "game_context": {
+            "alive_players": alive,
+            "dead_players": [p for p in ctx.get("players", []) if p not in alive],
+            "sheriff": None,
+            "game_config": {"total_players": len(ctx.get("players", []))}
+        },
+        "role_specific_info": {
+            "werewolf_teammates": [p for p, r in roles_map.items() if r == "werewolf" and p != player],
+            "witch_potions": {"save_available": state.get("resources", {}).get("witch_save_available", True),
+                              "poison_available": state.get("resources", {}).get("witch_poison_available", True)},
+            "seer_reveals": [],
+            "guard_protections": []
+        },
+        "complete_history": {"night_events": [], "day_events": [], "player_reputations": {}},
+        "current_phase_details": {"available_targets": alive},
+        "action_requirements": {"expected_action": "kill" if role == "werewolf" else ("reveal" if role == "seer" else "witch_action" if role == "witch" else "protect" if role == "guard" else "none"),
+                                "format_requirements": {}, "deadline": None}
+    }
     prompt = (
-        f"You are {player}, playing as {role} in a werewolf game.\n"
-        f"Alive players: {', '.join(alive)}.\n"
-        f"Known role assignments to the server (for simulation): {roles_map}.\n"
-        f"Short history:\n{history}\n"
+        "INPUT_JSON:\n"
+        f"{json.dumps(input_obj, ensure_ascii=False, indent=2)}\n\n"
+        "INSTRUCTION: Reply with a single JSON object matching the LOGIC_SPEC for night actions.\n"
+        "Examples (night): {\"action\":\"kill\",\"target\":\"AI_3\"} or {\"action\":\"none\"}.\n"
+        "Do not include any extra text outside the JSON object."
     )
-    if role == "werewolf":
-        prompt += (
-            "As a werewolf, coordinate with your teammates to choose a kill target. "
-            "Provide one player name from the Alive list and nothing else."
-        )
-    elif role == "seer":
-        prompt += "As the seer, choose one player to reveal (to yourself). Reply with only the exact player name."
-    elif role == "witch":
-        prompt += (
-            "As the witch, you can save the night victim (if you choose) or poison another player. "
-            "If you want to save, reply with the exact name of the victim. If you want to poison, "
-            "reply with the exact name of the poison target. If neither, reply with 'none'. "
-            "Reply with only one token: a player name or 'none'."
-        )
-    else:
-        prompt += "Choose a player at night (if any) or 'none'. Reply with only the exact name or 'none'."
     return prompt
 
-def build_day_prompt(player: str, state: Dict[str, Any]) -> str:
-    alive = state.get("alive", [])
+def build_day_prompt(player: str, state: Dict[str, Any], game_id: Optional[str] = None, message_id: Optional[str] = None) -> str:
+    """
+    Build JSON-first input for day voting/discussion per LOGIC_SPEC.
+    """
+    ctx = state.get("model_state") if state.get("model_state") else state
+    alive = ctx.get("alive", [])
     alive = [p for p in alive if p != player]
-    history = summarize_history(state, max_entries=8)
+    history = summarize_history(ctx, max_entries=8)
+    input_obj = {
+        "game_id": game_id or "local_game",
+        "message_id": message_id or str(random.randint(1000, 9999)),
+        "phase": "day_discussion",
+        "day": ctx.get("day", state.get("day", 0)),
+        "current_player": player,
+        "your_role": ctx.get("roles_known_to_server", {}).get(player),
+        "game_context": {
+            "alive_players": alive,
+            "dead_players": [p for p in ctx.get("players", []) if p not in alive],
+            "game_config": {"total_players": len(ctx.get("players", []))}
+        },
+        "complete_history": {"day_events": ctx.get("history", [])},
+        "current_phase_details": {"previous_speeches_today": ctx.get("phase_context", {}).get("current_talks", [])},
+        "action_requirements": {"expected_action": "vote", "format_requirements": {}, "deadline": None}
+    }
     prompt = (
-        f"You are {player} during the day discussion. Alive players: {', '.join(alive)}.\n"
-        f"Short history:\n{history}\n"
-        "Based on available information, choose one player to vote to lynch. Reply with only the exact player name."
+        "INPUT_JSON:\n"
+        f"{json.dumps(input_obj, ensure_ascii=False, indent=2)}\n\n"
+        "INSTRUCTION: Reply with a single JSON object like {\"action\":\"vote\",\"target\":\"AI_2\"}.\n"
+        "Do not include any extra text outside the JSON object."
     )
     return prompt
 
-def build_talk_prompt(player: str, state: Dict[str, Any], talk_history: List[Dict[str, str]]) -> str:
+def build_talk_prompt(player: str, state: Dict[str, Any], talk_history: List[Dict[str, str]], game_id: Optional[str] = None, message_id: Optional[str] = None) -> str:
     """
-    为玩家生成发言（白天按顺序发言）提示，要求模型返回 JSON:
-    {"speech":"..."} 或 {"speech":"...", "meta": {...}}
+    Build a JSON-first prompt for day speech. Expect {"speech":"...","meta":{}}.
     """
-    alive = state.get("alive", [])
+    ctx = state.get("model_state") if state.get("model_state") else state
+    alive = ctx.get("alive", [])
     alive = [p for p in alive if p != player]
-    hist = summarize_history(state, max_entries=8)
-    past = "\n".join([f'{h["player"]}: {h["speech"]}' for h in talk_history[-10:]]) if talk_history else "None"
+    hist = summarize_history(ctx, max_entries=8)
+    past_list = talk_history[-10:] if talk_history else []
+    input_obj = {
+        "game_id": game_id or "local_game",
+        "message_id": message_id or str(random.randint(1000, 9999)),
+        "phase": "day_discussion",
+        "day": ctx.get("day", state.get("day", 0)),
+        "current_player": player,
+        "your_role": ctx.get("roles_known_to_server", {}).get(player),
+        "game_context": {"alive_players": alive},
+        "complete_history": {"day_events": ctx.get("history", [])},
+        "current_phase_details": {"previous_speeches_today": past_list},
+        "action_requirements": {"expected_action": "speak", "format_requirements": {}, "deadline": None}
+    }
     prompt = (
-        f"You are {player} during the day discussion. Alive players: {', '.join(alive)}.\n"
-        f"Short history:\n{hist}\n"
-        f"Previous speeches:\n{past}\n"
-        "Now make a short in-character speech (one or two sentences) and reply in JSON: {\"speech\":\"...\"}."
+        "INPUT_JSON:\n"
+        f"{json.dumps(input_obj, ensure_ascii=False, indent=2)}\n\n"
+        "INSTRUCTION: Reply with a single JSON object like {\"action\":\"speak\",\"speech\":\"I suspect AI_4\",\"meta\":{}}.\n"
+        "Do not include any extra text outside the JSON object."
     )
     return prompt
 
 def validate_json_response(text: str, schema_type: str, role: Optional[str] = None) -> (Optional[Dict[str, Any]], Optional[str]):
     """
-    基本的轻量级 JSON 校验器，根据 schema_type 检查必要字段并返回解析后的对象或错误字符串。
-    schema_type: "night", "vote", "talk"
-    role: optional role hint for night (werewolf/seer/witch)
+    Lightweight JSON validator with extended schema support and error codes.
+    schema_type: "night","vote","talk","witch_action","protect","speak"
+    Returns (parsed_obj or None, error_code or None)
     """
     if not text:
         return None, "empty_response"
@@ -257,39 +307,49 @@ def validate_json_response(text: str, schema_type: str, role: Optional[str] = No
         return None, "not_json"
     if not isinstance(obj, dict):
         return None, "not_object"
-    if schema_type == "night":
-        # expected examples:
-        # werewolf: {"action":"kill","target":"AI_3"}
-        # seer: {"action":"reveal","target":"AI_2"}
-        # witch: {"action":"save"/"poison"/"none","target": "AI_x" or null}
+
+    action = obj.get("action")
+    # night-like actions
+    if schema_type in ("night", "witch_action", "protect"):
         if "action" not in obj:
             return None, "missing_action"
-        if obj.get("action") not in ("kill", "reveal", "save", "poison", "none"):
-            # allow other actions but warn
+        if schema_type == "witch_action":
+            # expect {"action":"witch_action","save_target":..., "poison_target":...} or similar
+            if "save_target" not in obj and "poison_target" not in obj and obj.get("action") not in ("none", "save", "poison", "witch_action"):
+                return None, "missing_witch_fields"
+            return obj, None
+        if schema_type == "protect":
+            if obj.get("action") != "protect" or "target" not in obj:
+                return None, "invalid_protect"
+            if not isinstance(obj.get("target"), str):
+                return None, "invalid_target_type"
+            return obj, None
+        # generic night validator
+        if obj.get("action") not in ("kill", "reveal", "save", "poison", "none", "protect"):
+            # allow other actions but mark as warning (return as-is)
             pass
-        # target may be optional for "none"
-        if obj.get("action") != "none" and "target" not in obj:
+        if obj.get("action") != "none" and "target" not in obj and obj.get("action") not in ("reveal",):
             return None, "missing_target"
         return obj, None
+
     if schema_type == "vote":
-        # expect {"target":"AI_X"} or {"action":"vote","target":"AI_X"}
         tgt = obj.get("target") or obj.get("vote")
         if not tgt or not isinstance(tgt, str):
             return None, "missing_target"
         return obj, None
-    if schema_type == "talk":
+
+    if schema_type in ("talk", "speak"):
         if "speech" not in obj or not isinstance(obj.get("speech"), str):
             return None, "missing_speech"
         return obj, None
+
+    # fallback: accept object
     return obj, None
 
 def decide_night_action(player: str, context: Dict[str, Any], api_key: str) -> Optional[str]:
     """
-    返回一个目标玩家名称（字符串）或 None。
-    context: {"role": "werewolf"/"seer"/"witch"/..., "state": Game.to_dict()}
-    现在优先解析模型返回的 JSON，例如: {"action":"kill","target":"AI_3"}。
-    - 若解析成功则记录在 _LAST_ACTIONS[player] 并返回 target。
-    - 若解析失败，则回退到原有的文本解析或启发式选择。
+    Use call_openai_chat_with_meta, record meta, parse JSON-first response and fall back to heuristics.
+    Returns target player name or None.
     """
     role = context.get("role")
     state = context.get("state", {})
@@ -299,44 +359,52 @@ def decide_night_action(player: str, context: Dict[str, Any], api_key: str) -> O
     if not alive:
         return None
 
-    # reset last action for player
     try:
         _LAST_ACTIONS.pop(player, None)
     except Exception:
         pass
 
-    # 尝试在线模型决策（若提供 api_key）
     model = get_model_for(player)
+    # Try online model if api_key provided
     if api_key:
         prompt = build_night_prompt(player, role, state)
-        resp = call_openai_chat(prompt, api_key, model=model, system="You are a rational werewolf-game bot. Reply in JSON like {\"action\":\"kill\",\"target\":\"AI_3\"} or 'none'.")
-        if resp:
-            text = resp.strip().strip('"').strip("'")
-            # try parse JSON first
+        start = time.time()
+        text, raw, model_used = call_openai_chat_with_meta(prompt, api_key, model=model, system="You are a rational werewolf-game bot. Reply in JSON like {\"action\":\"kill\",\"target\":\"AI_3\"} or {\"action\":\"none\"}.")
+        latency = time.time() - start
+        meta = {"model": model_used, "latency": latency, "raw": raw}
+        if text:
+            text_clean = text.strip().strip('"').strip("'")
+            # try parse JSON
             try:
-                obj = json.loads(text)
-                if isinstance(obj, dict):
-                    tgt_raw = obj.get("target") or obj.get("vote") or obj.get("player")
-                    action_raw = obj.get("action")
+                obj = json.loads(text_clean)
+                parsed, err = validate_json_response(json.dumps(obj), "night", role=role)
+                if parsed and err is None:
+                    tgt_raw = parsed.get("target") or parsed.get("vote") or parsed.get("player")
+                    action_raw = parsed.get("action")
+                    picked = None
                     if isinstance(tgt_raw, str):
                         picked = choose_from_candidates(tgt_raw, alive)
-                        if picked:
-                            _LAST_ACTIONS[player] = {"action": action_raw, "target": picked, "raw": obj}
-                            if picked.lower() == "none":
-                                return None
-                            return picked
+                    # handle witch_action shapes
+                    if parsed.get("action") in ("save", "poison") and parsed.get("target"):
+                        picked = choose_from_candidates(parsed.get("target"), alive)
+                    _LAST_ACTIONS[player] = {"action": action_raw, "target": picked, "raw": obj, "meta": meta}
+                    if picked and isinstance(picked, str) and picked.lower() == "none":
+                        return None
+                    if picked:
+                        return picked
             except Exception:
-                # not JSON, fall through to text parsing
                 pass
-            # fallback: text parsing as before
-            if text.lower() == "none":
+            # fallback to text candidate matching
+            if text_clean.lower() == "none":
+                _LAST_ACTIONS[player] = {"action": "none", "target": None, "raw_text": text_clean, "meta": meta}
                 return None
-            picked = choose_from_candidates(text, alive)
+            picked = choose_from_candidates(text_clean, alive)
             if picked:
-                _LAST_ACTIONS[player] = {"action": None, "target": picked, "raw_text": text}
+                _LAST_ACTIONS[player] = {"action": None, "target": picked, "raw_text": text_clean, "meta": meta}
                 return picked
+        # if online call returned no usable result, allow one retry with higher temperature off (not implemented) -> fallthrough
 
-    # 启发式后备策略 (并记录选择)
+    # Heuristic fallback
     if role == "werewolf":
         known = state.get("roles_known_to_server", {})
         candidates = [p for p in alive if known.get(p) != "werewolf"]
@@ -413,3 +481,104 @@ def decide_vote(player: str, context: Dict[str, Any], api_key: str) -> str:
     pick = random.choice(alive)
     _LAST_ACTIONS[player] = {"action": "vote", "target": pick, "raw_text": "heuristic"}
     return pick
+# Additional helpers: parse generic action responses and day-speech handler
+def _parse_action_text_and_pick(text: str, schema_type: str, alive: List[str], role: Optional[str] = None):
+    """
+    Try to parse model text into a normalized action dict and pick a concrete target from alive list.
+    Returns (normalized_obj_or_none, error_code_or_none, picked_target_or_none)
+    """
+    if not text:
+        return None, "empty_response", None
+    txt = text.strip().strip('"').strip("'")
+    # try direct JSON parse
+    try:
+        obj = json.loads(txt)
+    except Exception:
+        # try to find a JSON substring
+        start = txt.find("{")
+        end = txt.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            try:
+                obj = json.loads(txt[start:end+1])
+            except Exception:
+                obj = None
+        else:
+            obj = None
+    if obj is None:
+        # fallback: treat entire text as a target candidate (e.g., "AI_3")
+        picked = choose_from_candidates(txt, alive)
+        return None, "not_json", picked
+    # validate with existing validator
+    parsed, err = validate_json_response(json.dumps(obj), schema_type, role)
+    if parsed is None:
+        # attempt some common convenience fields
+        tgt = obj.get("target") or obj.get("vote") or obj.get("player") or obj.get("name")
+        if isinstance(tgt, str):
+            picked = choose_from_candidates(tgt, alive)
+            return obj, "validated_with_fallback", picked
+        return obj, err or "invalid_schema", None
+    # normalized target extraction
+    tgt_raw = parsed.get("target") or parsed.get("vote") or parsed.get("player") or parsed.get("name")
+    picked = None
+    if isinstance(tgt_raw, str):
+        picked = choose_from_candidates(tgt_raw, alive)
+    # handle witch shapes where save/poison exist - prefer explicit poison target when schema_type=="night"
+    if schema_type in ("night", "witch_action"):
+        if parsed.get("poison_target"):
+            picked = choose_from_candidates(parsed.get("poison_target"), alive)
+        elif parsed.get("save_target"):
+            picked = choose_from_candidates(parsed.get("save_target"), alive)
+    return parsed, None, picked
+
+def decide_talk(player: str, state: Dict[str, Any], talk_history: List[Dict[str, Any]], api_key: str) -> Optional[Dict[str, Any]]:
+    """
+    Produce a speech dict for the player during day discussion.
+    Returns {"speech": "...", "meta": {...}} or None if no speech.
+    """
+    # backward-compatible wrapper expected by app.py as decide_talk(player, state, talk_history, api_key)
+    # Note: some callers pass (player, state, talk_history, api_key) or (player, state, talk_history)
+    # We implement the full signature here.
+    try:
+        # resolve alive list
+        ctx = state.get("model_state") if state.get("model_state") else state
+        alive = ctx.get("alive", [])
+        if player not in alive:
+            return None
+        model = get_model_for(player)
+        # build prompt
+        prompt = build_talk_prompt(player, state, talk_history)
+        start = time.time()
+        # prefer openai-style call_with_meta to capture raw
+        text, raw, model_used = call_openai_chat_with_meta(prompt, api_key, model=model, system="You are a game AI. Reply with a JSON object like {\"action\":\"speak\",\"speech\":\"...\",\"meta\":{}}.")
+        latency = time.time() - start
+        meta = {"model": model_used, "latency": latency, "raw": raw}
+        speech_text = None
+        if text:
+            parsed, err = validate_json_response(text, "speak")
+            if parsed and "speech" in parsed:
+                speech_text = parsed.get("speech")
+                meta.update({"validate_error": err} if err else {})
+            else:
+                # attempt to parse tolerant JSON and extract speech
+                try:
+                    obj = json.loads(text.strip().strip('"').strip("'"))
+                    if isinstance(obj, dict) and "speech" in obj:
+                        speech_text = obj.get("speech")
+                except Exception:
+                    # fallback: use text as raw speech
+                    speech_text = text
+        if not speech_text:
+            # no valid output from model -> heuristic short statement
+            speech_text = f"{player} has nothing special to say."
+            meta["heuristic"] = True
+        out = {"speech": speech_text, "meta": meta}
+        _LAST_ACTIONS[player] = {"action": "speak", "speech": speech_text, "raw": text if 'text' in locals() else None, "meta": meta}
+        return out
+    except TypeError:
+        # older callers might not pass api_key; try without it
+        try:
+            return decide_talk(player, state, talk_history, None)  # type: ignore[arg-type]
+        except Exception:
+            return {"speech": f"{player} has nothing to add.", "meta": {"heuristic": True}}
+    except Exception:
+        return {"speech": f"{player} has nothing to add.", "meta": {"heuristic": True}}

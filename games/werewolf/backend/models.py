@@ -15,6 +15,10 @@ class Role(Enum):
     WEREWOLF = "werewolf"
     SEER = "seer"
     WITCH = "witch"
+    HUNTER = "hunter"
+    GUARD = "guard"
+    IDIOT = "idiot"
+    CUPID = "cupid"
     VILLAGER = "villager"
 
 @dataclass
@@ -26,6 +30,16 @@ class Player:
     # 女巫资源：仅在该玩家为 WITCH 时有效
     witch_save_available: bool = True
     witch_poison_available: bool = True
+    # 守卫记录：不可连续守同一人
+    guard_last_protected: Optional[str] = None
+    # 猎人开枪资格（被毒杀除外）
+    hunter_shot_available: bool = True
+    # 白痴翻牌后失去投票权但存活
+    idiot_revealed: bool = False
+    # 丘比特是否已完成连线
+    cupid_link_ready: bool = False
+    # 丘比特配对的伴侣（若被连线）
+    lover_partner: Optional[str] = None
     # 预言家查看记录（player_name -> role string），供服务端记录历史
     seer_views: Dict[str, str] = field(default_factory=dict)
 
@@ -120,12 +134,88 @@ class GameState:
             "history": self.history[-20:],
         }
 
+    def link_lovers(self, a: str, b: str):
+        """
+        Link two players as lovers (Cupid effect). Both players will get lover_partner set.
+        """
+        pa = self.get_player(a)
+        pb = self.get_player(b)
+        if pa and pb:
+            pa.lover_partner = pb.name
+            pb.lover_partner = pa.name
+            pa.cupid_link_ready = True
+            pb.cupid_link_ready = True
+            # record in history for audit
+            self.record_history({"phase": "cupid", "day": self.day, "linked": [pa.name, pb.name]})
+
+ROLE_DISTRIBUTIONS: Dict[int, Dict[Role, int]] = {
+    6: {
+        Role.WEREWOLF: 2,
+        Role.VILLAGER: 2,
+        Role.SEER: 1,
+        Role.WITCH: 1,
+        Role.HUNTER: 0,
+        Role.GUARD: 0,
+        Role.IDIOT: 0,
+        Role.CUPID: 0,
+    },
+    8: {
+        Role.WEREWOLF: 2,
+        Role.VILLAGER: 3,
+        Role.SEER: 1,
+        Role.WITCH: 1,
+        Role.HUNTER: 1,
+        Role.GUARD: 0,
+        Role.IDIOT: 0,
+        Role.CUPID: 0,
+    },
+    10: {
+        Role.WEREWOLF: 3,
+        Role.VILLAGER: 3,
+        Role.SEER: 1,
+        Role.WITCH: 1,
+        Role.HUNTER: 1,
+        Role.GUARD: 1,
+        Role.IDIOT: 0,
+        Role.CUPID: 0,
+    },
+    12: {
+        Role.WEREWOLF: 4,
+        Role.VILLAGER: 4,
+        Role.SEER: 1,
+        Role.WITCH: 1,
+        Role.HUNTER: 1,
+        Role.GUARD: 1,
+        Role.IDIOT: 0,
+        Role.CUPID: 0,
+    },
+    16: {
+        Role.WEREWOLF: 4,
+        Role.VILLAGER: 6,
+        Role.SEER: 1,
+        Role.WITCH: 1,
+        Role.HUNTER: 1,
+        Role.GUARD: 1,
+        Role.IDIOT: 1,
+        Role.CUPID: 1,
+    },
+}
+
 def default_roles_for(n: int) -> List[Role]:
     if n < 4:
         return [Role.VILLAGER] * n
-    roles = [Role.WEREWOLF, Role.WEREWOLF, Role.SEER, Role.WITCH]
-    roles += [Role.VILLAGER] * (n - 4)
-    return roles
+    distribution = ROLE_DISTRIBUTIONS.get(n)
+    roles: List[Role] = []
+    if distribution:
+        for role, count in distribution.items():
+            roles.extend([role] * count)
+    else:
+        # fallback：基础配置 + 村民填充
+        base = [Role.WEREWOLF, Role.WEREWOLF, Role.SEER, Role.WITCH]
+        roles.extend(base[: min(len(base), n)])
+    if len(roles) < n:
+        roles.extend([Role.VILLAGER] * (n - len(roles)))
+    return roles[:n]
 
 def create_default_game(player_names: List[str]) -> GameState:
     players = [Player(name, Role.VILLAGER) for name in player_names]

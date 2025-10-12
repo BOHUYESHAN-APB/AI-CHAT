@@ -1,0 +1,19 @@
+{
+  "players": [
+    "AI_1",
+    "AI_2",
+    "AI_3",
+    "AI_4",
+    "AI_5",
+    "AI_6"
+  ],
+  "role_preferences": {},
+  "player_map": {
+    "AI_1": "deeppseek1",
+    "AI_2": "deeppseek1",
+    "AI_3": "deeppseek1",
+    "AI_4": "deepseek2",
+    "AI_5": "deepseek2",
+    "AI_6": "deepseek2"
+  }
+}
