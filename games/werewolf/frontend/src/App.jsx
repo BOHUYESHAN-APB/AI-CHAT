@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import RoundTableGame from "./RoundTableGame";
 
 const ROLES = ["werewolf", "seer", "witch", "villager"];
 
@@ -138,9 +139,33 @@ function ApiKeysEditor() {
                     model: {val.model || "-"} {val.model_url ? `(url)` : ""}
                   </div>
                 </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={() => startEdit(name)}>编辑</button>
-                  <button onClick={() => deleteProvider(name)}>删除</button>
+                <div style={{ display: "flex", gap: 8, flexDirection: "column", alignItems: "flex-end" }}>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => startEdit(name)}>编辑</button>
+                    <button onClick={() => deleteProvider(name)}>删除</button>
+                    <button
+                      onClick={async () => {
+                        setStatus("测试中...");
+                        try {
+                          const res = await fetch(`/config/api_keys/test?provider=${encodeURIComponent(name)}`);
+                          if (!res.ok) {
+                            const d = await res.json().catch(() => ({}));
+                            setStatus(`测试失败: ${d.error || res.status}`);
+                          } else {
+                            const d = await res.json();
+                            setStatus(`测试结果: has_key=${d.has_key}, reachable=${d.reachable}`);
+                          }
+                        } catch (e) {
+                          setStatus(`测试错误: ${e.message}`);
+                        }
+                        // reload providers to ensure no stale state
+                        load();
+                      }}
+                    >
+                      联通测试
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#444" }}>{/* status per-row is global status shown top */}</div>
                 </div>
               </div>
             ))}
@@ -361,6 +386,9 @@ function RoomsPanel() {
 
   useEffect(() => {
     fetchRooms();
+    // 每5秒自动刷新房间列表,确保状态同步
+    const interval = setInterval(fetchRooms, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   async function createRoom() {
@@ -379,30 +407,24 @@ function RoomsPanel() {
         data = null;
       }
       if (!res.ok) {
-        setStatus("创建失败");
+        setStatus(`创建失败: ${res.status} ${res.statusText}`);
         return;
       }
       // If backend returned full room object (new behavior), prefer it and update UI immediately
       if (data && data.room) {
-        setStatus(`已创建 房间 ${data.room.id}`);
-        setRooms((prev) => {
-          const exists = (prev || []).find((r) => r.id === data.room.id);
-          if (exists) {
-            return (prev || []).map((r) => (r.id === data.room.id ? data.room : r));
-          }
-          // show only the active room to match single-active-room policy
-          return [data.room];
-        });
+        setStatus(`已创建房间 ${data.room.id} (或复用已存在房间)`);
+        // 重要: 直接刷新房间列表,确保前端看到最新状态
+        await fetchRooms();
       } else if (data && data.room_id) {
-        setStatus(`已创建 房间 ${data.room_id}`);
+        setStatus(`已创建房间 ${data.room_id} (或复用已存在房间)`);
         // refresh rooms list to pick up server-side state
         await fetchRooms();
       } else {
-        setStatus("已创建");
+        setStatus("已创建(响应格式异常,请刷新)");
         await fetchRooms();
       }
     } catch (e) {
-      setStatus("创建失败");
+      setStatus(`创建失败: ${e.message || "网络错误"}`);
     }
   }
 
@@ -473,7 +495,6 @@ function RoomsPanel() {
 function GameViewer() {
   const [rooms, setRooms] = useState([]);
   const [selectedRoom, setSelectedRoom] = useState(null);
-  const [roomState, setRoomState] = useState(null);
   const [status, setStatus] = useState("");
 
   async function fetchRooms() {
@@ -481,174 +502,134 @@ function GameViewer() {
       const res = await fetch("/rooms");
       const data = await res.json();
       setRooms(data.rooms || []);
+      setStatus("");
     } catch (e) {
-      setStatus("无法加载房间列表（请启动后端）");
-    }
-  }
-
-  async function loadRoomState(id) {
-    setStatus("加载房局中...");
-    try {
-      const res = await fetch(`/rooms/${id}/state`);
-      if (!res.ok) {
-        setStatus("房间状态未找到");
-        setRoomState(null);
-        return;
-      }
-      const data = await res.json();
-      setRoomState(data.game || null);
-      setStatus("已加载");
-    } catch (e) {
-      setStatus("加载失败（网络错误）");
-      setRoomState(null);
+      setStatus("无法加载房间列表(请启动后端)");
     }
   }
 
   useEffect(() => {
     fetchRooms();
+    // 每5秒刷新房间列表
+    const interval = setInterval(fetchRooms, 5000);
+    // listen for external refreshRooms event
+    const onRefresh = () => fetchRooms();
+    window.addEventListener("refreshRooms", onRefresh);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("refreshRooms", onRefresh);
+    };
   }, []);
 
   return (
     <div style={{ padding: 12 }}>
-      <h3>游戏查看器（实时）</h3>
-      <div style={{ marginBottom: 8, color: "#666" }}>
-        选择房间查看当前游戏状态、夜间/白天事件、talks 与投票元数据（含模型与延迟信息）。
-      </div>
+      {!selectedRoom && (
+        <>
+          <h3>游戏查看器（圆桌可视化）</h3>
+          <div style={{ marginBottom: 8, color: "#666" }}>
+            选择房间进入圆桌游戏可视化界面
+          </div>
 
-      <div style={{ display: "flex", gap: 12 }}>
-        <div style={{ width: 320 }}>
           <div style={{ marginBottom: 8 }}>
-            <button onClick={fetchRooms}>刷新房间列表</button>{" "}
+            <button onClick={fetchRooms}>🔄 刷新房间列表</button>
             <span style={{ color: "#333", marginLeft: 8 }}>{status}</span>
           </div>
-          <div style={{ border: "1px solid #eee", borderRadius: 8, padding: 8, maxHeight: 400, overflow: "auto" }}>
-            {rooms.length === 0 && <div>暂无房间</div>}
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+            {rooms.length === 0 && <div style={{ color: "#999" }}>暂无房间</div>}
             {rooms.map((r) => (
-              <div key={r.id} style={{ padding: 6, borderBottom: "1px solid #f3f3f3", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div>
-                  <strong style={{ fontSize: 12 }}>{r.id}</strong>
-                  <div style={{ fontSize: 12, color: "#666" }}>状态: {r.state} — 玩家: {r.players.join(", ")}</div>
+              <div
+                key={r.id}
+                onClick={() => setSelectedRoom(r.id)}
+                style={{
+                  padding: 16,
+                  border: "2px solid #eee",
+                  borderRadius: 12,
+                  cursor: "pointer",
+                  minWidth: 200,
+                  transition: "all 0.3s",
+                  background: r.state === "running" ? "#f0f9ff" : "#fff",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = "#667eea";
+                  e.currentTarget.style.boxShadow = "0 4px 12px rgba(102, 126, 234, 0.2)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = "#eee";
+                  e.currentTarget.style.boxShadow = "none";
+                }}
+              >
+                <div style={{ fontSize: 16, fontWeight: "bold", marginBottom: 8 }}>
+                  🎮 {r.id}
                 </div>
-                <div>
-                  <button onClick={() => { setSelectedRoom(r.id); loadRoomState(r.id); }}>查看</button>
+                <div style={{ fontSize: 14, color: "#666", marginBottom: 4 }}>
+                  状态: <strong>{r.state}</strong>
+                </div>
+                <div style={{ fontSize: 12, color: "#999" }}>
+                  玩家: {r.players.length} 人
                 </div>
               </div>
             ))}
           </div>
-        </div>
+        </>
+      )}
 
-        <div style={{ flex: 1 }}>
-          {!roomState && <div style={{ color: "#666" }}>请选择房间以查看游戏详情</div>}
-          {roomState && (
-            <div style={{ border: "1px solid #eee", borderRadius: 8, padding: 12 }}>
-              <h4>房间: {selectedRoom}</h4>
-              <div style={{ color: "#333", marginBottom: 8 }}>
-                阶段: {roomState.state} — 天数: {roomState.day}
-              </div>
-
-              <section style={{ marginBottom: 12 }}>
-                <h5>最近历史（展示最新 10 条）</h5>
-                <div style={{ maxHeight: 260, overflow: "auto", background: "#fafafa", padding: 8 }}>
-                  {(roomState.history || []).slice(-10).reverse().map((h, idx) => (
-                    <div key={idx} style={{ padding: 8, borderBottom: "1px solid #eee" }}>
-                      <div style={{ fontSize: 13, fontWeight: 600 }}>{h.phase.toUpperCase()} — 第 {h.day} 天</div>
-                      {h.phase === "night" && (
-                        <div style={{ marginTop: 6 }}>
-                          <div>夜间被杀: <strong>{h.killed || "无"}</strong></div>
-                          <div style={{ marginTop: 6 }}>
-                            <div style={{ fontWeight: 600 }}>行动列表：</div>
-                            <ul style={{ margin: 6 }}>
-                              {(h.actions || []).map((a, i) => (
-                                <li key={i}>
-                                  <span style={{ fontWeight: 600 }}>{a.actor}</span> — {a.action} {a.target ? `-> ${a.target}` : ""} {a.result ? `(${a.result})` : ""} {a.meta && a.meta.model ? <em style={{ marginLeft: 6, color: "#666" }}>{a.meta.model} @{(a.meta.latency || 0).toFixed(2)}s</em> : null}
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        </div>
-                      )}
-                      {h.phase === "day" && (
-                        <div style={{ marginTop: 6 }}>
-                          <div style={{ fontWeight: 600 }}>发言：</div>
-                          <div style={{ marginTop: 4 }}>
-                            {(h.talks || []).map((t, i) => (
-                              <div key={i} style={{ marginBottom: 6, padding: 6, background: "#fff", border: "1px solid #f0f0f0", borderRadius: 6 }}>
-                                <div style={{ fontSize: 12, fontWeight: 600 }}>{t.player} <span style={{ color: "#666", fontSize: 11 }}>({t.model || "—"} {t.latency ? `${t.latency.toFixed(2)}s` : ""})</span></div>
-                                <div style={{ marginTop: 4, color: "#222" }}>{t.speech}</div>
-                              </div>
-                            ))}
-                          </div>
-
-                          <div style={{ marginTop: 8 }}>
-                            <div style={{ fontWeight: 600 }}>投票结果：</div>
-                            <div style={{ marginTop: 6 }}>
-                              <div>票数分布: {JSON.stringify(h.votes || {})}</div>
-                              <ul style={{ margin: 6 }}>
-                                {(h.votes_meta || []).map((v, i) => (
-                                  <li key={i}>
-                                    <strong>{v.voter}</strong> 投给 <strong>{v.vote}</strong> {v.model ? <span style={{ color: "#666" }}>({v.model} {v.latency ? `${v.latency.toFixed(2)}s` : ""})</span> : null}
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                      {h.phase !== "night" && h.phase !== "day" && <pre style={{ background: "#fff", padding: 6 }}>{JSON.stringify(h, null, 2)}</pre>}
-                    </div>
-                  ))}
-                </div>
-              </section>
-
-              <section style={{ marginBottom: 12 }}>
-                <h5>phase_context（摘要）</h5>
-                <div style={{ display: "flex", gap: 12 }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600 }}>last_night_result</div>
-                    <pre style={{ background: "#fafafa", padding: 8, maxHeight: 120, overflow: "auto" }}>{JSON.stringify(roomState.phase_context?.last_night_result || {}, null, 2)}</pre>
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600 }}>morning_announcement / current_talks</div>
-                    <pre style={{ background: "#fafafa", padding: 8, maxHeight: 120, overflow: "auto" }}>{JSON.stringify({ morning: roomState.phase_context?.morning_announcement, talks: roomState.phase_context?.current_talks }, null, 2)}</pre>
-                  </div>
-                </div>
-              </section>
-
-              <section style={{ marginBottom: 12 }}>
-                <h5>resources</h5>
-                <pre style={{ maxHeight: 120, overflow: "auto", background: "#fafafa", padding: 8 }}>{JSON.stringify(roomState.resources || {}, null, 2)}</pre>
-              </section>
-
-              <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={() => loadRoomState(selectedRoom)}>刷新房局</button>
-                <button onClick={() => { if (selectedRoom) fetch(`/rooms/${selectedRoom}/step`, { method: "POST" }).then(() => loadRoomState(selectedRoom)); }}>执行下一步</button>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+      {selectedRoom && (
+        <>
+          <button
+            onClick={() => setSelectedRoom(null)}
+            style={{
+              marginBottom: 12,
+              padding: "8px 16px",
+              cursor: "pointer",
+              background: "#667eea",
+              color: "#fff",
+              border: "none",
+              borderRadius: 8,
+            }}
+          >
+            ← 返回房间列表
+          </button>
+          <RoundTableGame roomId={selectedRoom} />
+        </>
+      )}
     </div>
   );
 }
 
 export default function App() {
   const [tab, setTab] = useState("rooms");
+  // helper to switch tabs; when navigating to the game viewer, emit a refresh event so GameViewer updates immediately
+  function handleTab(newTab) {
+    setTab(newTab);
+    if (newTab === "game") {
+      // dispatch a global event that GameViewer listens to (ensures it refreshes when tab is opened)
+      try {
+        window.dispatchEvent(new CustomEvent("refreshRooms"));
+      } catch (e) {
+        // older browsers fallback
+        const evt = document.createEvent("Event");
+        evt.initEvent("refreshRooms", true, true);
+        window.dispatchEvent(evt);
+      }
+    }
+  }
 
   return (
     <div style={{ fontFamily: "Inter, Arial, sans-serif", padding: 20, maxWidth: 1000, margin: "0 auto" }}>
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <h2 style={{ margin: 0 }}>狼人杀（AI 评测）控制台</h2>
         <nav style={{ display: "flex", gap: 8 }}>
-          <button onClick={() => setTab("rooms")} style={{ padding: 8 }}>
+          <button onClick={() => handleTab("rooms")} style={{ padding: 8 }}>
             房间
           </button>
-          <button onClick={() => setTab("api_keys")} style={{ padding: 8 }}>
+          <button onClick={() => handleTab("api_keys")} style={{ padding: 8 }}>
             API Keys
           </button>
-          <button onClick={() => setTab("players")} style={{ padding: 8 }}>
+          <button onClick={() => handleTab("players")} style={{ padding: 8 }}>
             玩家配置
           </button>
-          <button onClick={() => setTab("game")} style={{ padding: 8 }}>
+          <button onClick={() => handleTab("game")} style={{ padding: 8 }}>
             游戏查看
           </button>
         </nav>

@@ -1,3 +1,6 @@
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(BACKEND_DIR, "..", "..", ".."))
+
 def load_model_config() -> Dict[str, Any]:
     """
     加载后端可配置的模型映射配置。
@@ -16,9 +19,9 @@ def load_model_config() -> Dict[str, Any]:
     }
     """
     candidates = [
-        os.path.join(os.getcwd(), "games", "werewolf", "backend", "ai_models.json"),
-        os.path.join(os.getcwd(), "games", "werewolf", "backend", "ai_models.example.json"),
-        os.path.join(os.getcwd(), "ai_models.json"),
+        os.path.join(BACKEND_DIR, "ai_models.json"),
+        os.path.join(BACKEND_DIR, "ai_models.example.json"),
+        os.path.join(PROJECT_ROOT, "ai_models.json"),
     ]
     for p in candidates:
         try:
@@ -36,7 +39,7 @@ import random
 import requests
 import json
 import time
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 
 # Load config once
 _MODEL_CFG = load_model_config()
@@ -54,12 +57,11 @@ def load_api_keys() -> Dict[str, Any]:
     global _API_KEYS
     if _API_KEYS is not None:
         return _API_KEYS
-    p = os.path.join(os.getcwd(), "api_keys.json")
+    p = os.path.join(PROJECT_ROOT, "api_keys.json")
     try:
         if os.path.exists(p):
             with open(p, "r", encoding="utf-8") as f:
                 _API_KEYS = json.load(f) or {}
-                # normalize: ensure player_map exists
                 if "player_map" not in _API_KEYS:
                     _API_KEYS["player_map"] = {}
                 return _API_KEYS
@@ -121,7 +123,15 @@ def call_openai_chat(prompt: str, api_key: str, model: Optional[str] = None, sys
     res_text, _, _ = call_openai_chat_with_meta(prompt, api_key, model=model, system=system)
     return res_text
 
-def call_openai_chat_with_meta(prompt: str, api_key: str, model: Optional[str] = None, system: str = "You are a game AI.") -> (Optional[str], Optional[Dict[str, Any]], Optional[str]):
+def call_openai_chat_with_meta(
+    prompt: str,
+    api_key: str,
+    model: Optional[str] = None,
+    system: str = "You are a game AI.",
+    response_format: Optional[Dict[str, Any]] = None,
+    force_json: bool = False,
+    extra_headers: Optional[Dict[str, str]] = None,
+) -> Tuple[Optional[str], Optional[Dict[str, Any]], Optional[str]]:
     """
     Calls the model and returns a tuple: (text, raw_response_json_or_text, model_used).
     容错逻辑：
@@ -133,24 +143,40 @@ def call_openai_chat_with_meta(prompt: str, api_key: str, model: Optional[str] =
     model_from_key = None
     api_url_from_key = None
     keys = load_api_keys()
+    providers: Dict[str, Dict[str, Any]] = {}
+    if isinstance(keys, dict):
+        raw_providers = keys.get("providers")
+        if isinstance(raw_providers, dict):
+            providers = {k: v for k, v in raw_providers.items() if isinstance(v, dict)}
+        if not providers:
+            providers = {k: v for k, v in keys.items() if isinstance(v, dict) and (
+                "api_key" in v or "key" in v or "secret" in v
+            )}
+
     resolved_api_key = api_key
 
-    if not api_key and keys:
+    if not api_key and providers:
         # pick first available provider when no api_key provided
-        first = next(iter(keys.values()), None)
+        first = next(iter(providers.values()), None)
         if first:
-            resolved_api_key = first.get("api_key")
+            resolved_api_key = first.get("api_key") or first.get("key") or first.get("secret")
             model_from_key = first.get("model")
-            api_url_from_key = first.get("model_url")
+            api_url_from_key = first.get("model_url") or first.get("url") or first.get("endpoint")
 
-    if api_key and keys:
-        for prov, entry in keys.items():
-            # support caller passing provider id (prov) or the actual secret
-            if api_key == prov or api_key == entry.get("api_key"):
-                resolved_api_key = entry.get("api_key") or api_key
-                model_from_key = entry.get("model") or model_from_key
-                api_url_from_key = entry.get("model_url") or api_url_from_key
-                break
+    if api_key and providers:
+        # support caller passing provider name or raw key
+        if api_key in providers:
+            entry = providers.get(api_key) or {}
+            resolved_api_key = entry.get("api_key") or entry.get("key") or entry.get("secret") or api_key
+            model_from_key = entry.get("model") or model_from_key
+            api_url_from_key = entry.get("model_url") or entry.get("url") or entry.get("endpoint") or api_url_from_key
+        else:
+            for prov, entry in providers.items():
+                if api_key == entry.get("api_key") or api_key == entry.get("key") or api_key == entry.get("secret"):
+                    resolved_api_key = entry.get("api_key") or entry.get("key") or entry.get("secret")
+                    model_from_key = entry.get("model") or model_from_key
+                    api_url_from_key = entry.get("model_url") or entry.get("url") or entry.get("endpoint") or api_url_from_key
+                    break
 
     if not resolved_api_key:
         return None, None, None
@@ -159,6 +185,10 @@ def call_openai_chat_with_meta(prompt: str, api_key: str, model: Optional[str] =
     api_url = api_url_from_key or OPENAI_API_URL
 
     headers = {"Authorization": f"Bearer {resolved_api_key}", "Content-Type": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
+
+    auto_force_json = force_json or (isinstance(api_url, str) and "deepseek.com" in api_url.lower())
     payload = {
         "model": model_to_use,
         "messages": [
@@ -166,8 +196,11 @@ def call_openai_chat_with_meta(prompt: str, api_key: str, model: Optional[str] =
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.7,
-        "max_tokens": 200,
+        "max_tokens": 400,
     }
+    json_mode = response_format if response_format is not None else ({"type": "json_object"} if auto_force_json else None)
+    if json_mode:
+        payload["response_format"] = json_mode
     try:
         r = requests.post(api_url, json=payload, headers=headers, timeout=12)
         r.raise_for_status()
@@ -292,7 +325,7 @@ def build_talk_prompt(player: str, state: Dict[str, Any], talk_history: List[Dic
     )
     return prompt
 
-def validate_json_response(text: str, schema_type: str, role: Optional[str] = None) -> (Optional[Dict[str, Any]], Optional[str]):
+def validate_json_response(text: str, schema_type: str, role: Optional[str] = None) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
     Lightweight JSON validator with extended schema support and error codes.
     schema_type: "night","vote","talk","witch_action","protect","speak"
@@ -367,14 +400,23 @@ def decide_night_action(player: str, context: Dict[str, Any], api_key: str) -> O
     model = get_model_for(player)
     # Try online model if api_key provided
     if api_key:
+        provider_hint = context.get("provider")
         prompt = build_night_prompt(player, role, state)
         start = time.time()
-        text, raw, model_used = call_openai_chat_with_meta(prompt, api_key, model=model, system="You are a rational werewolf-game bot. Reply in JSON like {\"action\":\"kill\",\"target\":\"AI_3\"} or {\"action\":\"none\"}.")
+        text, raw, model_used = call_openai_chat_with_meta(
+            prompt,
+            api_key,
+            model=model,
+            system="You are a rational werewolf-game bot. Reply in JSON like {\"action\":\"kill\",\"target\":\"AI_3\"} or {\"action\":\"none\"}.",
+            force_json=True,
+        )
         latency = time.time() - start
-        meta = {"model": model_used, "latency": latency, "raw": raw}
+        meta = {"model": model_used, "latency": latency, "provider": provider_hint, "raw": raw, "json_mode": True}
+        if raw and isinstance(raw, dict) and raw.get("error"):
+            meta["error"] = raw.get("error")
+            print(f"[WARN] decide_night_action model error player={player} role={role} provider={provider_hint}: {raw.get('error')}")
         if text:
             text_clean = text.strip().strip('"').strip("'")
-            # try parse JSON
             try:
                 obj = json.loads(text_clean)
                 parsed, err = validate_json_response(json.dumps(obj), "night", role=role)
@@ -384,7 +426,6 @@ def decide_night_action(player: str, context: Dict[str, Any], api_key: str) -> O
                     picked = None
                     if isinstance(tgt_raw, str):
                         picked = choose_from_candidates(tgt_raw, alive)
-                    # handle witch_action shapes
                     if parsed.get("action") in ("save", "poison") and parsed.get("target"):
                         picked = choose_from_candidates(parsed.get("target"), alive)
                     _LAST_ACTIONS[player] = {"action": action_raw, "target": picked, "raw": obj, "meta": meta}
@@ -394,7 +435,6 @@ def decide_night_action(player: str, context: Dict[str, Any], api_key: str) -> O
                         return picked
             except Exception:
                 pass
-            # fallback to text candidate matching
             if text_clean.lower() == "none":
                 _LAST_ACTIONS[player] = {"action": "none", "target": None, "raw_text": text_clean, "meta": meta}
                 return None
@@ -424,12 +464,19 @@ def decide_night_action(player: str, context: Dict[str, Any], api_key: str) -> O
             if h.get("phase") == "night" and h.get("killed"):
                 last = h["killed"]
                 break
-        if last and random.random() < 0.6:
+        # Prefer saving if someone died and save is still available
+        if last and random.random() < 0.7:
             _LAST_ACTIONS[player] = {"action": "save", "target": last, "raw_text": "heuristic"}
             return last
-        pick = random.choice(alive)
-        _LAST_ACTIONS[player] = {"action": "poison", "target": pick, "raw_text": "heuristic"}
-        return pick
+        # Only occasionally use poison to avoid连续大量淘汰
+        if random.random() < 0.2:
+            known = state.get("roles_known_to_server", {})
+            candidates = [p for p in alive if known.get(p) != "werewolf"] or alive
+            pick = random.choice(candidates)
+            _LAST_ACTIONS[player] = {"action": "poison", "target": pick, "raw_text": "heuristic"}
+            return pick
+        _LAST_ACTIONS[player] = {"action": "none", "target": None, "raw_text": "heuristic"}
+        return None
     pick = random.choice(alive)
     _LAST_ACTIONS[player] = {"action": None, "target": pick, "raw_text": "heuristic"}
     return pick
@@ -454,27 +501,38 @@ def decide_vote(player: str, context: Dict[str, Any], api_key: str) -> str:
 
     model = get_model_for(player)
     if api_key:
+        provider_hint = context.get("provider")
         prompt = build_day_prompt(player, state)
-        resp = call_openai_chat(prompt, api_key, model=model, system="You are a rational werewolf-game bot. Reply in JSON like {\"target\":\"AI_2\"} or just the name.")
-        if resp:
-            text = resp.strip().strip('"').strip("'")
-            # try parse JSON first
+        start = time.time()
+        text, raw, model_used = call_openai_chat_with_meta(
+            prompt,
+            api_key,
+            model=model,
+            system="You are a rational werewolf-game bot. Reply in JSON like {\"action\":\"vote\",\"target\":\"AI_2\"} or just the name.",
+            force_json=True,
+        )
+        latency = time.time() - start
+        meta = {"model": model_used, "latency": latency, "provider": provider_hint, "raw": raw, "json_mode": True}
+        if raw and isinstance(raw, dict) and raw.get("error"):
+            meta["error"] = raw.get("error")
+            print(f"[WARN] decide_vote model error player={player} provider={provider_hint}: {raw.get('error')}")
+        if text:
+            cleaned = text.strip().strip('"').strip("'")
             try:
-                obj = json.loads(text)
+                obj = json.loads(cleaned)
                 if isinstance(obj, dict):
                     tgt_raw = obj.get("target") or obj.get("vote") or obj.get("player")
                     action_raw = obj.get("action") or obj.get("type")
                     if isinstance(tgt_raw, str):
                         picked = choose_from_candidates(tgt_raw, alive)
                         if picked:
-                            _LAST_ACTIONS[player] = {"action": action_raw or "vote", "target": picked, "raw": obj}
+                            _LAST_ACTIONS[player] = {"action": action_raw or "vote", "target": picked, "raw": obj, "meta": meta}
                             return picked
             except Exception:
                 pass
-            # fallback to text parsing
-            picked = choose_from_candidates(text, alive)
+            picked = choose_from_candidates(cleaned, alive)
             if picked:
-                _LAST_ACTIONS[player] = {"action": "vote", "target": picked, "raw_text": text}
+                _LAST_ACTIONS[player] = {"action": "vote", "target": picked, "raw_text": cleaned, "meta": meta}
                 return picked
 
     # 启发式：当前随机（后续可替换为基于历史/交互的策略）
@@ -545,13 +603,23 @@ def decide_talk(player: str, state: Dict[str, Any], talk_history: List[Dict[str,
         if player not in alive:
             return None
         model = get_model_for(player)
+        provider_hint = state.get("provider")
         # build prompt
         prompt = build_talk_prompt(player, state, talk_history)
         start = time.time()
         # prefer openai-style call_with_meta to capture raw
-        text, raw, model_used = call_openai_chat_with_meta(prompt, api_key, model=model, system="You are a game AI. Reply with a JSON object like {\"action\":\"speak\",\"speech\":\"...\",\"meta\":{}}.")
+        text, raw, model_used = call_openai_chat_with_meta(
+            prompt,
+            api_key,
+            model=model,
+            system="You are a game AI. Reply with a JSON object like {\"action\":\"speak\",\"speech\":\"...\",\"meta\":{}}.",
+            force_json=True,
+        )
         latency = time.time() - start
-        meta = {"model": model_used, "latency": latency, "raw": raw}
+        meta = {"model": model_used, "latency": latency, "provider": provider_hint, "raw": raw, "json_mode": True}
+        if raw and isinstance(raw, dict) and raw.get("error"):
+            meta["error"] = raw.get("error")
+            print(f"[WARN] decide_talk model error player={player} provider={provider_hint}: {raw.get('error')}")
         speech_text = None
         if text:
             parsed, err = validate_json_response(text, "speak")
